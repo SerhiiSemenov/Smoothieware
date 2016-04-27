@@ -443,15 +443,15 @@ float TemperatureControl::get_temperature()
 uint32_t TemperatureControl::thermistor_read_tick(uint32_t dummy)
 {
     float temperature = sensor->get_temperature();
-    if(!this->readonly && target_temperature > 2) {
-        if (isinf(temperature) || temperature < min_temp || temperature > max_temp) {
-            this->temp_violated = true;
-            target_temperature = UNDEFINED;
-            heater_pin.set((this->o = 0));
-        } else {
-            pid_process(temperature);
-        }
-    }
+//    if(!this->readonly && target_temperature > 2) {
+//        if (isinf(temperature) || temperature < min_temp || temperature > max_temp) {
+//            this->temp_violated = true;
+//            target_temperature = UNDEFINED;
+//            heater_pin.set((this->o = 0));
+//        } else {
+//            pid_process(temperature);
+//        }
+//    }
 
     last_reading = temperature;
     return 0;
