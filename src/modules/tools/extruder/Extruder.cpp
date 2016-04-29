@@ -28,10 +28,13 @@
 #include "ExtruderPublicAccess.h"
 
 #include <mri.h>
+#include <vector>
+#include <algorithm>
 
 // OLD config names for backwards compatibility, NOTE new configs will not be added here
 #define extruder_module_enable_checksum      CHECKSUM("extruder_module_enable")
 #define extruder_steps_per_mm_checksum       CHECKSUM("extruder_steps_per_mm")
+#define extruder_steps_per_degree_checksum   CHECKSUM("extruder_steps_per_angle")
 #define extruder_filament_diameter_checksum  CHECKSUM("extruder_filament_diameter")
 #define extruder_acceleration_checksum       CHECKSUM("extruder_acceleration")
 #define extruder_step_pin_checksum           CHECKSUM("extruder_step_pin")
@@ -44,6 +47,7 @@
 
 #define default_feed_rate_checksum           CHECKSUM("default_feed_rate")
 #define steps_per_mm_checksum                CHECKSUM("steps_per_mm")
+#define steps_per_angle_checksum             CHECKSUM("steps_per_angle")
 #define filament_diameter_checksum           CHECKSUM("filament_diameter")
 #define acceleration_checksum                CHECKSUM("acceleration")
 #define step_pin_checksum                    CHECKSUM("step_pin")
@@ -90,6 +94,7 @@ Extruder::Extruder( uint16_t config_identifier, bool single )
     this->stepper_motor = nullptr;
     this->milestone_last_position = 0;
     this->max_volumetric_rate = 0;
+    this->sensor = new AngleSensor(config_identifier);
 
     memset(this->offset, 0, sizeof(this->offset));
 }
@@ -115,6 +120,8 @@ void Extruder::on_module_loaded()
     // Start values
     this->target_position = 0;
     this->current_position = 0;
+    this->target_angle = 0;
+    this->current_angle = 0;
     this->unstepped_distance = 0;
     this->current_block = NULL;
     this->mode = OFF;
@@ -142,6 +149,7 @@ void Extruder::on_config_reload(void *argument)
         // If this module uses the old "single extruder" configuration style
 
         this->steps_per_millimeter        = THEKERNEL->config->value(extruder_steps_per_mm_checksum      )->by_default(1)->as_number();
+        this->steps_per_angle             = THEKERNEL->config->value(extruder_steps_per_degree_checksum  )->by_default(1)->as_number();
         this->filament_diameter           = THEKERNEL->config->value(extruder_filament_diameter_checksum )->by_default(0)->as_number();
         this->acceleration                = THEKERNEL->config->value(extruder_acceleration_checksum      )->by_default(1000)->as_number();
         this->feed_rate                   = THEKERNEL->config->value(extruder_default_feed_rate_checksum )->by_default(1000)->as_number();
@@ -160,6 +168,7 @@ void Extruder::on_config_reload(void *argument)
         // If this module was created with the new multi extruder configuration style
 
         this->steps_per_millimeter = THEKERNEL->config->value(extruder_checksum, this->identifier, steps_per_mm_checksum      )->by_default(1)->as_number();
+        this->steps_per_angle      = THEKERNEL->config->value(extruder_checksum, this->identifier, steps_per_angle_checksum   )->by_default(1)->as_number();
         this->filament_diameter    = THEKERNEL->config->value(extruder_checksum, this->identifier, filament_diameter_checksum )->by_default(0)->as_number();
         this->acceleration         = THEKERNEL->config->value(extruder_checksum, this->identifier, acceleration_checksum      )->by_default(1000)->as_number();
         this->feed_rate            = THEKERNEL->config->value(extruder_checksum, this->identifier, default_feed_rate_checksum )->by_default(1000)->as_number();
@@ -207,6 +216,53 @@ void Extruder::on_get_public_data(void *argument)
         pdr->set_data_ptr(&this->steps_per_millimeter);
         pdr->set_taken();
     }
+}
+
+float Extruder::distance_to_angle(float dist)
+{
+    return (dist * this->steps_per_millimeter) / this->steps_per_angle;
+}
+
+float Extruder::angle_to_distance(float angle)
+{
+    return (angle * this->steps_per_angle) / this->steps_per_millimeter;
+}
+
+float Extruder::optimize_angle(float angle)
+{
+    float distance_right_motion = 0.0;
+    float resultAngle = 0.0;
+
+    if (MAX_ANGLE_LIMIT < angle || angle < MIN_ANGLE_LIMIT)
+    {
+        THEKERNEL->streams->printf("Wrong angle, use range 180 -180, angle=%4.4f\n\r");
+        return 0;
+    }
+    //If target angle negativ convert it to positiv
+    if (angle < 0)
+    {
+        angle = DEGREE_OF_CYCLE/2 + angle;
+    }
+
+    distance_right_motion = this->current_angle - angle;
+
+    if (abs(distance_right_motion) <= MAX_MOTION_PER_STEP)
+    {
+        resultAngle = angle;
+    }
+    else
+    {
+        if (distance_right_motion < 0)
+        {
+            resultAngle = (DEGREE_OF_CYCLE/2 - angle) * (-1);
+        }
+        else
+        {
+            resultAngle = (DEGREE_OF_CYCLE/2 + angle);
+        }
+    }
+//    THEKERNEL->streams->printf("Current angle=%4.4f, input angle=%4.4f, RES=%4.4f \n\r", this->current_angle, angle, resultAngle);
+    return resultAngle;
 }
 
 // check against maximum speeds and return the rate modifier
@@ -369,18 +425,18 @@ void Extruder::on_gcode_received(void *argument)
 
         } else if (gcode->m == 500 || gcode->m == 503) { // M500 saves some volatile settings to config override file, M503 just prints the settings
             if( this->single_config ) {
-                gcode->stream->printf(";E Steps per mm:\nM92 E%1.4f\n", this->steps_per_millimeter);
-                gcode->stream->printf(";E Filament diameter:\nM200 D%1.4f\n", this->filament_diameter);
-                gcode->stream->printf(";E retract length, feedrate, zlift length, feedrate:\nM207 S%1.4f F%1.4f Z%1.4f Q%1.4f\n", this->retract_length, this->retract_feedrate * 60.0F, this->retract_zlift_length, this->retract_zlift_feedrate);
-                gcode->stream->printf(";E retract recover length, feedrate:\nM208 S%1.4f F%1.4f\n", this->retract_recover_length, this->retract_recover_feedrate * 60.0F);
-                gcode->stream->printf(";E acceleration mm/sec²:\nM204 E%1.4f\n", this->acceleration);
-                gcode->stream->printf(";E max feed rate mm/sec:\nM203 E%1.4f\n", this->stepper_motor->get_max_rate());
+                gcode->stream->printf(";E Steps per mm:\nM92 E%1.4f E Steps per angle:\nM92 E%1.4f\n\r", this->steps_per_millimeter, this->steps_per_angle);
+                gcode->stream->printf(";E Filament diameter:\nM200 D%1.4f\n\r", this->filament_diameter);
+                gcode->stream->printf(";E retract length, feedrate, zlift length, feedrate:\nM207 S%1.4f F%1.4f Z%1.4f Q%1.4f\n\r", this->retract_length, this->retract_feedrate * 60.0F, this->retract_zlift_length, this->retract_zlift_feedrate);
+                gcode->stream->printf(";E retract recover length, feedrate:\n\rM208 S%1.4f F%1.4f\n\r", this->retract_recover_length, this->retract_recover_feedrate * 60.0F);
+                gcode->stream->printf(";E acceleration mm/sec²:\nM204 E%1.4f\n\r", this->acceleration);
+                gcode->stream->printf(";E max feed rate mm/sec:\nM203 E%1.4f\n\r", this->stepper_motor->get_max_rate());
                 if(this->max_volumetric_rate > 0) {
-                    gcode->stream->printf(";E max volumetric rate mm³/sec:\nM203 V%1.4f\n", this->max_volumetric_rate);
+                    gcode->stream->printf(";E max volumetric rate mm³/sec:\nM203 V%1.4f\n\r", this->max_volumetric_rate);
                 }
 
             } else {
-                gcode->stream->printf(";E Steps per mm:\nM92 E%1.4f P%d\n", this->steps_per_millimeter, this->identifier);
+                gcode->stream->printf(";E Steps per mm:\nM92 E%1.4f P%d Steps per angle: E%1.4f\n\r", this->steps_per_millimeter, this->identifier, this->steps_per_angle);
                 gcode->stream->printf(";E Filament diameter:\nM200 D%1.4f P%d\n", this->filament_diameter, this->identifier);
                 gcode->stream->printf(";E retract length, feedrate:\nM207 S%1.4f F%1.4f Z%1.4f Q%1.4f P%d\n", this->retract_length, this->retract_feedrate * 60.0F, this->retract_zlift_length, this->retract_zlift_feedrate, this->identifier);
                 gcode->stream->printf(";E retract recover length, feedrate:\nM208 S%1.4f F%1.4f P%d\n", this->retract_recover_length, this->retract_recover_feedrate * 60.0F, this->identifier);
@@ -457,7 +513,7 @@ void Extruder::on_gcode_received(void *argument)
     }
 
     // handle some codes now for the volumetric rate limiting
-    // G90 G91 G92 M82 M83
+    // G28 G90 G91 G92 M82 M83
     if(gcode->has_m) {
         switch(gcode->m) {
             case 82: this->milestone_absolute_mode = true; break;
@@ -476,6 +532,11 @@ void Extruder::on_gcode_received(void *argument)
                         this->milestone_last_position = 0;
                     }
                 }
+                break;
+            case 28:
+                gcode->stream->printf("Move extruder\n\r");
+                this->current_angle = 0;
+                this->do_home();
                 break;
         }
     }
@@ -520,44 +581,36 @@ void Extruder::on_gcode_execute(void *argument)
         // G92: Reset extruder position
         if( gcode->g == 92 ) {
             if( gcode->has_letter('E') ) {
-                this->current_position = gcode->get_value('E');
+                this->current_angle = optimize_angle(gcode->get_value('E'));
+                this->target_angle  = this->current_angle;
+                this->current_position = angle_to_distance(this->current_angle);
                 this->target_position  = this->current_position;
                 this->unstepped_distance = 0;
             } else if( gcode->get_num_args() == 0) {
                 this->current_position = 0.0;
                 this->target_position = this->current_position;
+                this->current_angle = 0.0;
+                this->target_angle = this->current_angle;
                 this->unstepped_distance = 0;
             }
-
-        } else if (gcode->g == 10) {
-            // FW retract command
-            feed_rate = retract_feedrate; // mm/sec
-            this->mode = SOLO;
-            this->travel_distance = -retract_length;
-            this->target_position += this->travel_distance;
-            this->en_pin.set(0);
-
-        } else if (gcode->g == 11) {
-            // un retract command
-            feed_rate = retract_recover_feedrate; // mm/sec
-            this->mode = SOLO;
-            this->travel_distance = (retract_length + retract_recover_length);
-            this->target_position += this->travel_distance;
-            this->en_pin.set(0);
 
         } else if (gcode->g <= 3) {
             // Extrusion length from 'G' Gcode
             if( gcode->has_letter('E' )) {
                 // Get relative extrusion distance depending on mode ( in absolute mode we must subtract target_position )
-                float extrusion_distance = gcode->get_value('E');
+                float angle = optimize_angle(gcode->get_value('E'));
+                float relative_angle = angle;
+                float extrusion_distance = angle_to_distance(angle);
                 float relative_extrusion_distance = extrusion_distance;
                 if (this->absolute_mode) {
                     relative_extrusion_distance -= this->target_position;
                     this->target_position = extrusion_distance;
+                    relative_angle -= this->target_angle;
+                    this->target_angle = angle;
                 } else {
                     this->target_position += relative_extrusion_distance;
+                    this->target_angle += relative_angle;
                 }
-
                 // If the robot is moving, we follow it's movement, otherwise, we move alone
                 if( fabsf(gcode->millimeters_of_travel) < 0.00001F ) { // With floating numbers, we can have 0 != 0, NOTE needs to be same as in Robot.cpp#745
                     this->mode = SOLO;
@@ -567,7 +620,6 @@ void Extruder::on_gcode_execute(void *argument)
                     this->mode = FOLLOW;
                     this->travel_ratio = (relative_extrusion_distance * this->volumetric_multiplier * this->extruder_multiplier) / gcode->millimeters_of_travel; // adjust for volumetric extrusion and extruder multiplier
                 }
-
                 this->en_pin.set(0);
             }
 
@@ -600,6 +652,7 @@ void Extruder::on_block_begin(void *argument)
 
     // common for both FOLLOW and SOLO
     this->current_position += this->travel_distance ;
+    this->current_angle += distance_to_angle(this->travel_distance);
 
     // round down, we take care of the fractional part next time
     int steps_to_step = abs((int)floorf(this->steps_per_millimeter * (this->travel_distance + this->unstepped_distance) ));
@@ -711,4 +764,85 @@ uint32_t Extruder::stepper_motor_finished_move(uint32_t dummy)
     }
     return 0;
 
+}
+
+void Extruder::do_home(void)
+{
+    float current_search_angle = 0;
+    float angle;
+    std::vector<int> sensor_value;
+    std::vector<int>::iterator max_element_it;
+
+    //Prepare motor
+    this->stepper_motor->enable(true);
+    this->stepper_motor->set_speed(10000);
+    this->stepper_motor->set_moved_last_block(true);
+
+    //Find zero angle
+    while(current_search_angle <= DEGREE_OF_CYCLE)
+    {
+        this->stepper_motor->move(true, RAW_SEARCH_ANGLE * this->steps_per_angle, 1000);
+        current_search_angle += RAW_SEARCH_ANGLE;
+        sensor_value.push_back(this->sensor->get_raw_value());
+        while(this->stepper_motor->is_moving())
+        {
+            if(THEKERNEL->is_halted())
+            {
+                THEKERNEL->streams->printf("Operation halted \n\r");
+                return;
+            }
+        }
+    }
+    max_element_it = std::max_element(sensor_value.begin(), sensor_value.end());
+    angle = (std::distance(sensor_value.begin(), max_element_it)) * RAW_SEARCH_ANGLE;
+    //Set zero angle
+    this->stepper_motor->move(true, angle * this->steps_per_angle, 1000);
+    while(this->stepper_motor->is_moving())
+    {
+        if(THEKERNEL->is_halted())
+        {
+            THEKERNEL->streams->printf("Operation halted \n\r");
+            return;
+        }
+    }
+#ifdef ACCURANCY_POSITION
+    //Find accuracy position
+    bool isFinish = false;
+    int position = 0;
+    int previousValue = this->sensor->get_raw_value();
+
+    this->stepper_motor->move(true, 1, 1000);
+    while(this->stepper_motor->is_moving())
+    {
+        if(THEKERNEL->is_halted())
+        {
+            THEKERNEL->streams->printf("Operation halted \n\r");
+            return;
+        }
+    }
+    while(!isFinish)
+    {
+        if(previousValue > this->sensor->get_raw_value())
+        {
+            ++position;
+        }
+        else if(previousValue == this->sensor->get_raw_value())
+        {
+            return;
+        }
+        else
+        {
+            --position;
+        }
+        this->stepper_motor->move(true, position, 1000);
+        while(this->stepper_motor->is_moving())
+        {
+            if(THEKERNEL->is_halted())
+            {
+                THEKERNEL->streams->printf("Operation halted \n\r");
+                return;
+            }
+        }
+    }
+#endif
 }

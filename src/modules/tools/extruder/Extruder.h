@@ -12,6 +12,13 @@
 
 #include "Tool.h"
 #include "Pin.h"
+#include "AngleSensor.h"
+
+#define DEGREE_OF_CYCLE         360
+#define RAW_SEARCH_ANGLE        0.5
+#define MAX_ANGLE_LIMIT         180.0
+#define MIN_ANGLE_LIMIT         -180.0
+#define MAX_MOTION_PER_STEP     90
 
 class StepperMotor;
 class Block;
@@ -39,26 +46,35 @@ class Extruder : public Tool {
         void on_set_public_data(void* argument);
         uint32_t rate_increase() const;
         float check_max_speeds(float target, float isecs);
+        float distance_to_angle(float dist);
+        float angle_to_distance(float angle);
+        float optimize_angle(float angle);
+        void do_home(void);
 
         StepperMotor*  stepper_motor;
         Pin            step_pin;                     // Step pin for the stepper driver
         Pin            dir_pin;                      // Dir pin for the stepper driver
         Pin            en_pin;
         float          target_position;              // End point ( in mm ) for the current move
+        float          target_angle;                 // End point ( in degrees ) for the current move
         float          unstepped_distance;           // overflow buffer for requested moves that are less than 1 step
         Block*         current_block;                // Current block we are stepping, same as Stepper's one
+        AngleSensor*   sensor;
 
         // kept together so they can be passed as public data
         struct {
             float steps_per_millimeter;         // Steps to travel one millimeter
+            float steps_per_angle;              // Steps per angle
             float filament_diameter;            // filament diameter
             float extruder_multiplier;          // flow rate 1.0 == 100%
             float acceleration;                 // extruder accleration SOLO setting
             float retract_length;               // firmware retract length
+            float current_angle;                 // Current point ( in degrees ) for the current move
             float current_position;             // Current point ( in mm ) for the current move, incremented every time a move is executed
         };
 
         float saved_current_position;
+        float saved_current_angle;
         float volumetric_multiplier;
         float feed_rate;                // default rate mm/sec for SOLO moves only
         float milestone_last_position;  // used for calculating volumemetric rate, last position in mm³
@@ -66,6 +82,7 @@ class Extruder : public Tool {
 
         float travel_ratio;
         float travel_distance;
+        float travel_angle;
 
         // for firmware retract
         float retract_feedrate;
