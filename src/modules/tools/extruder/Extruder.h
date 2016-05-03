@@ -98,6 +98,7 @@ class Extruder : public Tool {
         float travel_distance;
         float travel_angle;
         float previous_angle;
+        float current_position_optimize;
         bool previous_angle_is_positiv;
 
         // for firmware retract

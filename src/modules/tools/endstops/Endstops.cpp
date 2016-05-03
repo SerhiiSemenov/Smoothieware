@@ -641,9 +641,6 @@ void Endstops::process_home_command(Gcode* gcode)
     } else if(gcode->subcode == 3) { // G28.3 is a smoothie special it sets manual homing
         if(gcode->get_num_args() == 0) {
             THEKERNEL->robot->reset_axis_position(0, 0, 0);
-        }else if(gcode->has_letter('E') && !gcode->has_letter('X') &&
-                !gcode->has_letter('Y') && !gcode->has_letter('Z')){
-            return;
         } else {
             // do a manual homing based on given coordinates, no endstops required
             if(gcode->has_letter('X')) THEKERNEL->robot->reset_axis_position(gcode->get_value('X'), X_AXIS);
@@ -666,6 +663,10 @@ void Endstops::process_home_command(Gcode* gcode)
         return;
     }
 
+    if(gcode->has_letter('E') && !gcode->has_letter('X') &&
+                    !gcode->has_letter('Y') && !gcode->has_letter('Z')){
+                return;
+    }
     // G28 is received, we have homing to do
 
     // First wait for the queue to be empty

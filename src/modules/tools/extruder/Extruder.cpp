@@ -100,8 +100,16 @@ Extruder::Extruder( uint16_t config_identifier, bool single )
     this->milestone_last_position = 0;
     this->max_volumetric_rate = 0;
     this->sensor = new AngleSensor(config_identifier);
-    this->current_position = 0;
-    this->current_angle = 0;
+    this->current_position = 0.0F;
+    this->current_angle = 0.0F;
+    this->previous_angle = 0.0F;
+    this->previous_angle_is_positiv = true;
+    this->travel_ratio = 0.0F;
+    this->travel_distance = 0.0F;
+    this->travel_angle = 0.0F;
+    this->saved_current_position = 0.0F;
+    this->saved_current_angle = 0.0F;
+    this->current_position_optimize = 0.0F;
 
     memset(this->offset, 0, sizeof(this->offset));
 }
@@ -240,20 +248,99 @@ float Extruder::angle_to_distance(float angle)
     return (angle * this->steps_per_angle) / this->steps_per_millimeter;
 }
 
-float Extruder::optimize_angle(float angle)
-{
-    float distance_right_motion = 0.0;
-    float resultAngle = 0.0;
-
-    if (MAX_ANGLE_LIMIT < angle || angle < MIN_ANGLE_LIMIT)
+float Extruder::getNextEdgeAngle(float angle)
+ {
+    float resAngle = 180 + angle;
+    if (resAngle >= 360)
     {
-        angle = DEGREE_OF_CYCLE/2 + angle;
+        resAngle = resAngle -360;
+    }
+    return resAngle;
+}
+
+float Extruder::getNegativeFromPositivAngle(float angle)
+{
+    return (360 - angle)*(-1);
+}
+
+float Extruder::getPositivFromNegativeAngle(float angle)
+{
+    return 360 - angle;
+}
+
+float Extruder::optimize_angle(float input_angle)
+{
+    std::vector<float> rotation_distance;
+    std::vector<float>::iterator min_distance_it;
+    float resAngle = 0.0;
+
+    if (input_angle < 0)
+    {
+       input_angle = 360 + input_angle;
     }
 
+    if (input_angle == this->previous_angle)
+    {
+        return this->current_position_optimize;
+    }
 
+    if (MAX_ANGLE_LIMIT < input_angle || input_angle < MIN_ANGLE_LIMIT)
+    {
+        input_angle = (input_angle/MAX_ANGLE_LIMIT)*MAX_ANGLE_LIMIT;
+    }
 
-    return resultAngle;
-}
+     /*Find distance*/
+    rotation_distance.push_back(abs(this->previous_angle - input_angle));                                 //FIRST_CASE  if curent_angle > input_angle, move <--, else -->
+    rotation_distance.push_back(abs(360 - abs(this->previous_angle - input_angle)));                      //SECOND_CASE if curent_angle > input_angle, move -->, else <--
+    rotation_distance.push_back(abs(getNextEdgeAngle(this->previous_angle) - input_angle));               //THIRD_CASE  if 180+curent_angle > input_angle, move <--, else -->
+    rotation_distance.push_back(abs(360 - abs(getNextEdgeAngle(this->previous_angle) - input_angle)));    //FOURTH_CASE if 180-curent_angle > input_angle, move -->, else <--
+
+    min_distance_it = std::min_element(rotation_distance.begin(), rotation_distance.end());
+    int diff_case = std::distance(rotation_distance.begin(), min_distance_it);
+
+    if (rotation_distance[diff_case] == 0.0)
+    {
+        return this->current_position_optimize;
+    }
+
+    switch(diff_case)
+    {
+        case FIRST_CASE:
+            // set new angle positiv
+            resAngle = this->current_position_optimize + (input_angle - this->previous_angle);
+        break;
+        case SECOND_CASE:
+            // set negative angle
+            if (this->current_position_optimize > 0 && this->current_position_optimize < MAX_ANGLE_LIMIT)
+            {
+                resAngle = this->current_position_optimize - rotation_distance[diff_case];
+            }
+            else
+            {
+                resAngle = this->current_position_optimize + rotation_distance[diff_case];
+            }
+        break;
+        case THIRD_CASE:
+            resAngle = this->current_position_optimize + (input_angle - getNextEdgeAngle(this->previous_angle));
+        break;
+        case FOURTH_CASE:
+            // set new negativ angle
+            if (this->current_position_optimize > 0)
+            {
+                resAngle = this->current_position_optimize - rotation_distance[diff_case];
+            }
+            else
+            {
+                resAngle = this->current_position_optimize + rotation_distance[diff_case];
+            }
+        break;
+    };
+//    THEKERNEL->streams->printf("Case %d, Current angle=%4.4f, input angle=%4.4f, RES=%4.4f \n\r", diff_case, this->current_position_optimize, input_angle, resAngle);
+    this->previous_angle = input_angle;
+    this->current_position_optimize = resAngle;
+
+    return resAngle;
+ }
 
 // check against maximum speeds and return the rate modifier
 float Extruder::check_max_speeds(float target, float isecs)
@@ -539,9 +626,8 @@ void Extruder::on_gcode_received(void *argument)
                 }
                 break;
             case 28:
-                gcode->stream->printf("Move extruder\n\r");
                 this->current_angle = 0;
-                if (gcode->get_num_args() == 0 || gcode->has_letter('E'))
+                if (gcode->has_letter('E'))
                 {
                     this->do_home();
                 }
@@ -802,7 +888,6 @@ void Extruder::do_home(void)
         }
     }
     max_element_it = std::max_element(sensor_value.begin(), sensor_value.end());
-    THEKERNEL->streams->printf("Max val pos %d", std::distance(sensor_value.begin(), max_element_it));
     angle = (std::distance(sensor_value.begin(), max_element_it)) * RAW_SEARCH_ANGLE;
     //Set zero angle
     this->stepper_motor->move(true, angle * this->steps_per_angle, 1000);
@@ -814,44 +899,4 @@ void Extruder::do_home(void)
             return;
         }
     }
-#ifdef ACCURANCY_POSITION
-    //Find accuracy position
-    bool isFinish = false;
-    int position = 0;
-    int previousValue = this->sensor->get_raw_value();
-
-    this->stepper_motor->move(true, 1, 1000);
-    while(this->stepper_motor->is_moving())
-    {
-        if(THEKERNEL->is_halted())
-        {
-            THEKERNEL->streams->printf("Operation halted \n\r");
-            return;
-        }
-    }
-    while(!isFinish)
-    {
-        if(previousValue > this->sensor->get_raw_value())
-        {
-            ++position;
-        }
-        else if(previousValue == this->sensor->get_raw_value())
-        {
-            return;
-        }
-        else
-        {
-            --position;
-        }
-        this->stepper_motor->move(true, position, 1000);
-        while(this->stepper_motor->is_moving())
-        {
-            if(THEKERNEL->is_halted())
-            {
-                THEKERNEL->streams->printf("Operation halted \n\r");
-                return;
-            }
-        }
-    }
-#endif
 }
