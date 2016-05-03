@@ -42,6 +42,13 @@ class Extruder : public Tool {
         Block*   append_empty_block();
 
     private:
+        enum{
+            FIRST_CASE,
+            SECOND_CASE,
+            THIRD_CASE,
+            FOURTH_CASE
+        };
+
         void on_get_public_data(void* argument);
         void on_set_public_data(void* argument);
         uint32_t rate_increase() const;
@@ -49,12 +56,19 @@ class Extruder : public Tool {
         float distance_to_angle(float dist);
         float angle_to_distance(float angle);
         float optimize_angle(float angle);
+        float getNextEdgeAngle(float angle);
+        float getNegativeFromPositivAngle(float angle);
+        float getPositivFromNegativeAngle(float angle);
         void do_home(void);
 
         StepperMotor*  stepper_motor;
         Pin            step_pin;                     // Step pin for the stepper driver
         Pin            dir_pin;                      // Dir pin for the stepper driver
         Pin            en_pin;
+        Pin            en_ultrasonic_pin;
+        Pin            get_ready_pin;
+        Pin            get_status_pin;
+        Pin            get_fault_pin;
         float          target_position;              // End point ( in mm ) for the current move
         float          target_angle;                 // End point ( in degrees ) for the current move
         float          unstepped_distance;           // overflow buffer for requested moves that are less than 1 step
@@ -83,6 +97,8 @@ class Extruder : public Tool {
         float travel_ratio;
         float travel_distance;
         float travel_angle;
+        float previous_angle;
+        bool previous_angle_is_positiv;
 
         // for firmware retract
         float retract_feedrate;

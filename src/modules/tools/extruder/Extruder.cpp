@@ -58,6 +58,11 @@
 #define y_offset_checksum                    CHECKSUM("y_offset")
 #define z_offset_checksum                    CHECKSUM("z_offset")
 
+#define ultrasonic_enable_pin                CHECKSUM("ultrasonic_enable_pin")
+#define ultrasonic_ready_pin                 CHECKSUM("ultrasonic_ready_pin")
+#define ultrasonic_status_pin                CHECKSUM("ultrasonic_status_pin")
+#define ultrasonic_fault_pin                 CHECKSUM("ultrasonic_fault_pin")
+
 #define retract_length_checksum              CHECKSUM("retract_length")
 #define retract_feedrate_checksum            CHECKSUM("retract_feedrate")
 #define retract_recover_length_checksum      CHECKSUM("retract_recover_length")
@@ -95,6 +100,8 @@ Extruder::Extruder( uint16_t config_identifier, bool single )
     this->milestone_last_position = 0;
     this->max_volumetric_rate = 0;
     this->sensor = new AngleSensor(config_identifier);
+    this->current_position = 0;
+    this->current_angle = 0;
 
     memset(this->offset, 0, sizeof(this->offset));
 }
@@ -177,6 +184,11 @@ void Extruder::on_config_reload(void *argument)
         this->dir_pin.from_string(  THEKERNEL->config->value(extruder_checksum, this->identifier, dir_pin_checksum           )->by_default("nc" )->as_string())->as_output();
         this->en_pin.from_string(   THEKERNEL->config->value(extruder_checksum, this->identifier, en_pin_checksum            )->by_default("nc" )->as_string())->as_output();
 
+        this->en_ultrasonic_pin.from_string ( THEKERNEL->config->value(extruder_checksum, this->identifier, ultrasonic_enable_pin  )->by_default("nc" )->as_string())->as_output();
+        this->get_ready_pin.from_string     ( THEKERNEL->config->value(extruder_checksum, this->identifier, ultrasonic_ready_pin   )->by_default("nc" )->as_string())->as_input();
+        this->get_status_pin.from_string    ( THEKERNEL->config->value(extruder_checksum, this->identifier, ultrasonic_status_pin  )->by_default("nc" )->as_string())->as_input();
+        this->get_fault_pin.from_string     ( THEKERNEL->config->value(extruder_checksum, this->identifier, ultrasonic_fault_pin   )->by_default("nc" )->as_string())->as_input();
+
         this->offset[X_AXIS] = THEKERNEL->config->value(extruder_checksum, this->identifier, x_offset_checksum          )->by_default(0)->as_number();
         this->offset[Y_AXIS] = THEKERNEL->config->value(extruder_checksum, this->identifier, y_offset_checksum          )->by_default(0)->as_number();
         this->offset[Z_AXIS] = THEKERNEL->config->value(extruder_checksum, this->identifier, z_offset_checksum          )->by_default(0)->as_number();
@@ -235,33 +247,11 @@ float Extruder::optimize_angle(float angle)
 
     if (MAX_ANGLE_LIMIT < angle || angle < MIN_ANGLE_LIMIT)
     {
-        THEKERNEL->streams->printf("Wrong angle, use range 180 -180, angle=%4.4f\n\r");
-        return 0;
-    }
-    //If target angle negativ convert it to positiv
-    if (angle < 0)
-    {
         angle = DEGREE_OF_CYCLE/2 + angle;
     }
 
-    distance_right_motion = this->current_angle - angle;
 
-    if (abs(distance_right_motion) <= MAX_MOTION_PER_STEP)
-    {
-        resultAngle = angle;
-    }
-    else
-    {
-        if (distance_right_motion < 0)
-        {
-            resultAngle = (DEGREE_OF_CYCLE/2 - angle) * (-1);
-        }
-        else
-        {
-            resultAngle = (DEGREE_OF_CYCLE/2 + angle);
-        }
-    }
-//    THEKERNEL->streams->printf("Current angle=%4.4f, input angle=%4.4f, RES=%4.4f \n\r", this->current_angle, angle, resultAngle);
+
     return resultAngle;
 }
 
@@ -516,6 +506,21 @@ void Extruder::on_gcode_received(void *argument)
     // G28 G90 G91 G92 M82 M83
     if(gcode->has_m) {
         switch(gcode->m) {
+            case 50:        //Enable ultrasonic generator
+                this->en_ultrasonic_pin.set(true);
+                break;
+            case 51:
+                this->en_ultrasonic_pin.set(false);
+                break;
+            case 52:
+                THEKERNEL->streams->printf("%s\n\r", this->get_ready_pin.get() ? "true" : "false");
+                break;
+            case 53:
+                THEKERNEL->streams->printf("%s\n\r", this->get_status_pin.get() ? "true" : "false");
+                break;
+            case 54:
+                THEKERNEL->streams->printf("%s\n\r", this->get_fault_pin.get() ? "true" : "false");
+                break;
             case 82: this->milestone_absolute_mode = true; break;
             case 83: this->milestone_absolute_mode = false; break;
         }
@@ -536,7 +541,10 @@ void Extruder::on_gcode_received(void *argument)
             case 28:
                 gcode->stream->printf("Move extruder\n\r");
                 this->current_angle = 0;
-                this->do_home();
+                if (gcode->get_num_args() == 0 || gcode->has_letter('E'))
+                {
+                    this->do_home();
+                }
                 break;
         }
     }
@@ -794,6 +802,7 @@ void Extruder::do_home(void)
         }
     }
     max_element_it = std::max_element(sensor_value.begin(), sensor_value.end());
+    THEKERNEL->streams->printf("Max val pos %d", std::distance(sensor_value.begin(), max_element_it));
     angle = (std::distance(sensor_value.begin(), max_element_it)) * RAW_SEARCH_ANGLE;
     //Set zero angle
     this->stepper_motor->move(true, angle * this->steps_per_angle, 1000);
