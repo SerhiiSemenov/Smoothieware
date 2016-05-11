@@ -396,7 +396,7 @@ void Player::on_main_loop(void *argument)
             return;
         }
 
-        char buf[130]; // lines upto 128 characters are allowed, anything longer is discarded
+        char buf[70]; // lines upto 128 characters are allowed, anything longer is discarded
         bool discard = false;
 
         while(fgets(buf, sizeof(buf), this->current_file_handler) != NULL) {
@@ -413,7 +413,8 @@ void Player::on_main_loop(void *argument)
                 struct SerialMessage message;
                 message.message = buf;
                 message.stream = this->current_stream;
-
+                // waits for the end of command
+                THEKERNEL->conveyor->wait_for_empty_queue();
                 // waits for the queue to have enough room
                 THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message);
                 played_cnt += len;
