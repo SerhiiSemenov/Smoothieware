@@ -272,7 +272,7 @@ float Extruder::optimize_angle(float input_angle)
 {
     std::vector<float> rotation_distance;
     std::vector<float>::iterator min_distance_it;
-    float resAngle = 0.0;
+//    float resAngle = 0.0;
 
     if (input_angle < 0)
     {
@@ -281,7 +281,8 @@ float Extruder::optimize_angle(float input_angle)
 
     if (input_angle == this->previous_angle)
     {
-        return this->current_position_optimize;
+        this->travel_distance = 0;
+        return 0;
     }
 
     if (MAX_ANGLE_LIMIT < input_angle || input_angle < MIN_ANGLE_LIMIT)
@@ -295,52 +296,66 @@ float Extruder::optimize_angle(float input_angle)
     rotation_distance.push_back(abs(getNextEdgeAngle(this->previous_angle) - input_angle));               //THIRD_CASE  if 180+curent_angle > input_angle, move <--, else -->
     rotation_distance.push_back(abs(360 - abs(getNextEdgeAngle(this->previous_angle) - input_angle)));    //FOURTH_CASE if 180-curent_angle > input_angle, move -->, else <--
 
+//    THEKERNEL->streams->printf("%4.4f, %4.4f, %4.4f, %4.4f\n\r", rotation_distance[0], rotation_distance[1], rotation_distance[2], rotation_distance[3]);
     min_distance_it = std::min_element(rotation_distance.begin(), rotation_distance.end());
     int diff_case = std::distance(rotation_distance.begin(), min_distance_it);
 
     if (rotation_distance[diff_case] == 0.0)
     {
-        return this->current_position_optimize;
+        this->travel_distance = 0;
+        return 0;
     }
 
     switch(diff_case)
     {
         case FIRST_CASE:
             // set new angle positiv
-            resAngle = this->current_position_optimize + (input_angle - this->previous_angle);
+//            resAngle = this->current_position_optimize + (input_angle - this->previous_angle);
+            this->travel_distance = angle_to_distance(input_angle - this->previous_angle);
         break;
         case SECOND_CASE:
             // set negative angle
-            if (this->current_position_optimize > 0 && this->current_position_optimize < MAX_ANGLE_LIMIT)
+            if ((this->previous_angle - input_angle) < 0)
             {
-                resAngle = this->current_position_optimize - rotation_distance[diff_case];
+//                resAngle = this->current_position_optimize - rotation_distance[diff_case];
+                this->travel_distance = angle_to_distance(rotation_distance[diff_case])*(-1);
             }
             else
             {
-                resAngle = this->current_position_optimize + rotation_distance[diff_case];
+//                resAngle = this->current_position_optimize + rotation_distance[diff_case];
+                this->travel_distance = angle_to_distance(rotation_distance[diff_case]);
             }
         break;
         case THIRD_CASE:
-            resAngle = this->current_position_optimize + (input_angle - getNextEdgeAngle(this->previous_angle));
+//            resAngle = this->current_position_optimize + (input_angle - getNextEdgeAngle(this->previous_angle));
+            this->travel_distance = angle_to_distance(input_angle - getNextEdgeAngle(this->previous_angle));
         break;
         case FOURTH_CASE:
             // set new negativ angle
-            if (this->current_position_optimize > 0)
+            if ((getNextEdgeAngle(this->previous_angle) - input_angle) < 0)
             {
-                resAngle = this->current_position_optimize - rotation_distance[diff_case];
+//                resAngle = this->current_position_optimize + rotation_distance[diff_case];
+                this->travel_distance = angle_to_distance(rotation_distance[diff_case])*(-1);
             }
             else
             {
-                resAngle = this->current_position_optimize + rotation_distance[diff_case];
+//                resAngle = this->current_position_optimize - rotation_distance[diff_case];
+                this->travel_distance = angle_to_distance(rotation_distance[diff_case]);
             }
         break;
     };
-//    THEKERNEL->streams->printf("Case %d, Current angle=%4.4f, input angle=%4.4f, RES=%4.4f \n\r", diff_case, this->current_position_optimize, input_angle, resAngle);
-    this->previous_angle = input_angle;
-    this->current_position_optimize = resAngle;
 
-    return resAngle;
- }
+//    if (resAngle > 360)
+//    {
+//        resAngle = resAngle - 360;
+//    }
+
+//    THEKERNEL->streams->printf("case %d, current_a=%4.4f, input_a=%4.4f, res=%4.4f travel_distance=%4.4f\n\r", diff_case + 1, this->current_position_optimize, input_angle, resAngle, distance_to_angle(this->travel_distance));
+    this->previous_angle = input_angle;
+//    this->current_position_optimize = resAngle;
+
+    return 0;
+}
 
 // check against maximum speeds and return the rate modifier
 float Extruder::check_max_speeds(float target, float isecs)
@@ -631,6 +646,18 @@ void Extruder::on_gcode_received(void *argument)
                 {
                     this->do_home();
                 }
+                //TODO: remove
+                this->target_position = 0;
+                this->current_position = 0;
+                this->target_angle = 0;
+                this->current_angle = 0;
+                this->unstepped_distance = 0;
+                this->travel_ratio = 0.0F;
+                this->travel_distance = 0.0F;
+                this->travel_angle = 0.0F;
+                this->saved_current_position = 0.0F;
+                this->saved_current_angle = 0.0F;
+                this->current_position_optimize = 0.0F;
                 break;
         }
     }
@@ -708,7 +735,7 @@ void Extruder::on_gcode_execute(void *argument)
                 // If the robot is moving, we follow it's movement, otherwise, we move alone
                 if( fabsf(gcode->millimeters_of_travel) < 0.00001F ) { // With floating numbers, we can have 0 != 0, NOTE needs to be same as in Robot.cpp#745
                     this->mode = SOLO;
-                    this->travel_distance = relative_extrusion_distance;
+//                    this->travel_distance = relative_extrusion_distance;
                 } else {
                     // We move proportionally to the robot's movement
                     this->mode = FOLLOW;
@@ -741,12 +768,18 @@ void Extruder::on_block_begin(void *argument)
     Block *block = static_cast<Block *>(argument);
     if( this->mode == FOLLOW ) {
         // In FOLLOW mode, we just follow the stepper module
-        this->travel_distance = block->millimeters * this->travel_ratio;
+//        this->travel_distance = block->millimeters * this->travel_ratio;
     }
 
     // common for both FOLLOW and SOLO
     this->current_position += this->travel_distance ;
     this->current_angle += distance_to_angle(this->travel_distance);
+
+    if (this->current_angle > 360)
+    {
+        this->current_angle = this->current_angle - 360;
+        this->current_position = angle_to_distance(this->current_angle);
+    }
 
     // round down, we take care of the fractional part next time
     int steps_to_step = abs((int)floorf(this->steps_per_millimeter * (this->travel_distance + this->unstepped_distance) ));
